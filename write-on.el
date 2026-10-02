@@ -754,7 +754,7 @@ Text:
     ('mark
      (let ((n 0))
        (dolist (it items)
-         (when-let ((pos (write-on--locate (alist-get 'text it) beg end)))
+         (when-let* ((pos (write-on--locate (alist-get 'text it) beg end)))
            (write-on--lab-overlay (car pos) (cdr pos)
                                   'face 'write-on-lab-mark
                                   'help-echo (alist-get 'note it)
@@ -840,7 +840,7 @@ Text:
          (pos (or (seq-find (lambda (p) (> p (point))) all) (car all))))
     (unless pos (user-error "No Lab marks"))
     (goto-char pos)
-    (when-let ((note (get-char-property pos 'write-on-note)))
+    (when-let* ((note (get-char-property pos 'write-on-note)))
       (message "%s" note))
     (set-transient-map write-on-lab-repeat-map)))
 
@@ -935,7 +935,7 @@ count is redone once, after 1s idle."
 
 (defun write-on--panel-refresh ()
   "Redraw the panel for the spans at point, if the panel is showing."
-  (when-let ((win (write-on--panel-window)))
+  (when-let* ((win (write-on--panel-window)))
     (let ((src (current-buffer))
           (spans (write-on--alts-at)))
       (with-current-buffer (window-buffer win)
@@ -1011,7 +1011,7 @@ count is redone once, after 1s idle."
 (defun write-on-panel-toggle ()
   "Show or hide the alternatives panel."
   (interactive)
-  (if-let ((win (write-on--panel-window)))
+  (if-let* ((win (write-on--panel-window)))
       (delete-window win)
     (with-current-buffer (get-buffer-create write-on--panel-name)
       (unless (derived-mode-p 'write-on-panel-mode) (write-on-panel-mode)))
@@ -1080,7 +1080,7 @@ Held by reference: the document's name can change (renames, uniquify).")
     (delete-region beg end)
     (with-current-buffer write-on--source
       (insert text))
-    (when-let ((w (get-buffer-window write-on--source)))
+    (when-let* ((w (get-buffer-window write-on--source)))
       (select-window w))))
 
 (defun write-on--overflow-changed (&rest _)
@@ -1142,10 +1142,10 @@ Held by reference: the document's name can change (renames, uniquify).")
                         (insert-file-contents file)
                         (read (current-buffer)))))
             (pcase-dolist (`(,b ,e ,text) (plist-get data :ghosts))
-              (when-let ((pos (write-on--find b e text)))
+              (when-let* ((pos (write-on--find b e text)))
                 (write-on--ghost (car pos) (cdr pos))))
             (pcase-dolist (`(,b ,e ,text ,kind ,vs ,nested) (plist-get data :alts))
-              (when-let ((pos (write-on--find b e text)))
+              (when-let* ((pos (write-on--find b e text)))
                 (overlay-put (write-on--alt-make (car pos) (cdr pos) kind vs)
                              'write-on-nested nested)))
             (with-current-buffer (write-on--overflow-buffer)

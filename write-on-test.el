@@ -18,7 +18,7 @@
        (dolist (b (buffer-list))
          (when (string-prefix-p "*overflow: essay.md" (buffer-name b))
            (kill-buffer b)))
-       (when-let ((b (get-file-buffer file)))
+       (when-let* ((b (get-file-buffer file)))
          (with-current-buffer b (set-buffer-modified-p nil))
          (kill-buffer b))
        (delete-directory dir t))))
