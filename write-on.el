@@ -1,8 +1,28 @@
 ;;; write-on.el --- Alternative control for prose -*- lexical-binding: t; -*-
 
+;; Copyright (C) 2026 bbw9n
+
+;; Author: bbw9n <bbw9nio@gmail.com>
+;; URL: https://github.com/bbw9n/write-on.el
 ;; Version: 0.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: wp
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;; This file is not part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -32,9 +52,13 @@
 (defface write-on-ghost '((t :inherit shadow))
   "Face for ghosted (dimmed) text.")
 
-(defcustom write-on-overflow-width 40
+(defcustom write-on-overflow-width 60
   "Width of the Overflow side window."
   :type 'integer)
+
+(defvar-local write-on--loaded nil
+  "Non-nil once the saved state is loaded, so re-enabling doesn't load it twice.")
+(put 'write-on--loaded 'permanent-local t)
 
 (defvar-local write-on--state-broken nil
   "Non-nil when the saved state failed to load; we then refuse to overwrite it.")
@@ -71,19 +95,22 @@ wiped.  In Doom it defaults to `doom-state-dir' (user-saved data), never
                       write-on-directory)))
 
 (defun write-on--overlays (prop &optional beg end)
+  "Overlays with PROP between BEG and END (default: whole buffer)."
   (seq-filter (lambda (o) (overlay-get o prop))
               (overlays-in (or beg (point-min)) (or end (point-max)))))
 
 (defun write-on--text (o)
+  "The text overlay O covers."
   (buffer-substring-no-properties (overlay-start o) (overlay-end o)))
 
 ;;; Ghost
 
 (defun write-on--ghosts (&optional beg end)
+  "Ghost overlays between BEG and END."
   (write-on--overlays 'write-on-ghost beg end))
 
 (defun write-on--ghost (beg end)
-  ;; Front-advance t, rear-advance nil: typing at either edge stays outside.
+  "Dim BEG..END.  Typing at either edge stays outside the ghost."
   (let ((o (make-overlay beg end nil t nil)))
     (overlay-put o 'write-on-ghost t)
     (overlay-put o 'face 'write-on-ghost)
@@ -180,6 +207,7 @@ point goes further, halfway to 1."
                 'face 'write-on-alt-dots)))
 
 (defun write-on--render (o active)
+  "Style span O as ACTIVE (at point) or not."
   (unless (eq (overlay-get o 'write-on-kind) 'paragraph)
     (overlay-put o 'face (if active 'write-on-alt-active 'write-on-alt)))
   (unless (overlay-get o 'write-on-busy)   ; the spinner owns it meanwhile
@@ -189,6 +217,7 @@ point goes further, halfway to 1."
                                   'display '((height 0.6) (raise -0.3)))))))
 
 (defun write-on--echo-dots (o)
+  "Show O's variant dots in the echo area, if configured."
   (when (eq write-on-alt-indicator 'echo)
     (let ((message-log-max nil))
       (message "%s %s" (overlay-get o 'write-on-kind) (write-on--dots o)))))
@@ -208,6 +237,7 @@ point goes further, halfway to 1."
     (setq write-on--active o)))
 
 (defun write-on--alts (&optional beg end)
+  "Alternative overlays between BEG and END."
   (write-on--overlays 'write-on-alts beg end))
 
 (defun write-on--alts-at (&optional pos)
@@ -220,6 +250,7 @@ point goes further, halfway to 1."
                            (- (overlay-end b) (overlay-start b)))))))
 
 (defun write-on--alt-make (beg end kind variants)
+  "Make a span of KIND over BEG..END holding VARIANTS."
   (let ((o (make-overlay beg end nil t nil)))
     (overlay-put o 'write-on-alts variants)
     (overlay-put o 'write-on-kind kind)
@@ -231,6 +262,7 @@ point goes further, halfway to 1."
     o))
 
 (defun write-on--trim (bounds)
+  "BOUNDS (BEG . END) shrunk past surrounding whitespace."
   (save-excursion
     (goto-char (cdr bounds)) (skip-chars-backward " \t\n")
     (let ((end (point)))
@@ -238,10 +270,12 @@ point goes further, halfway to 1."
       (cons (min (point) end) end))))
 
 (defun write-on--span (kind)
+  "Bounds of the KIND (word, sentence, paragraph) at point, trimmed."
   (write-on--trim (or (bounds-of-thing-at-point kind)
                       (user-error "No %s at point" kind))))
 
 (defun write-on--infer-kind (beg end)
+  "Guess whether BEG..END is a word, sentence, or paragraph."
   (cond ((not (string-match-p "[ \t\n]" (buffer-substring beg end))) 'word)
         ((or (string-match-p "\n" (buffer-substring beg end))
              (equal (cons beg end) (save-excursion (goto-char beg)
@@ -251,8 +285,8 @@ point goes further, halfway to 1."
 
 (defun write-on--alt-target (arg)
   "The alternative overlay to act on, and whether it was just created.
-Region > existing span at point > new span: word, or sentence with
-\\[universal-argument], or paragraph with two."
+Region > existing span at point > new span: word, or sentence when ARG
+is \\[universal-argument], or paragraph with two."
   (let* ((kind (pcase arg ('nil nil) ('(4) 'sentence) (_ 'paragraph)))
          (bounds (cond ((use-region-p) (write-on--trim (cons (region-beginning)
                                                              (region-end))))
@@ -270,13 +304,18 @@ Region > existing span at point > new span: word, or sentence with
                                   (list (buffer-substring-no-properties b e)))
               t)))))
 
-(defun write-on--variants (o)
-  "O's variants, with its current text folded in so edits aren't lost."
+(defun write-on--shown-variants (o)
+  "O's variants plus its current text, without recording the text."
   (let ((cur (write-on--text o))
         (vs (overlay-get o 'write-on-alts)))
     (if (or (member cur vs) (string-empty-p cur))
         vs
-      (overlay-put o 'write-on-alts (append vs (list cur))))))
+      (append vs (list cur)))))
+
+(defun write-on--variants (o)
+  "O's variants, with its current text folded in so edits aren't lost.
+Only call this when acting on O, not while the user may be mid-edit."
+  (overlay-put o 'write-on-alts (write-on--shown-variants o)))
 
 ;; Swapping a span replaces its text, which would destroy the alternatives
 ;; and ghosts inside it.  So they're captured into the span's
@@ -354,8 +393,8 @@ overlay; find which variant now sits there and cover it again."
 Choose an existing variant to swap it in, or type a new one to add it.
 Choosing the current text just records the span, so you can rewrite it in
 place and keep the original.  The span is the region, an existing span at
-point, or the word at point (sentence with \\[universal-argument],
-paragraph with two)."
+point, or the word at point; with prefix ARG the sentence
+\(\\[universal-argument]) or paragraph (two)."
   (interactive "P")
   (apply #'write-on--pick (write-on--alt-target arg)))
 
@@ -441,7 +480,7 @@ pick is one undo step."
   "Change group joining consecutive cycling into one undo step.")
 
 (defun write-on-alt-next (n)
-  "Swap in the next alternative of the innermost span at point.
+  "Swap in the Nth next alternative of the innermost span at point.
 Then ] and [ keep cycling; a run of cycling undoes in one step."
   (interactive "p")
   (let* ((o (or (car (write-on--alts-at)) (user-error "No alternatives here")))
@@ -461,7 +500,7 @@ Then ] and [ keep cycling; a run of cycling undoes in one step."
     (set-transient-map write-on-cycle-map)))
 
 (defun write-on-alt-prev (n)
-  "Swap in the previous alternative of the innermost span at point."
+  "Swap in the Nth previous alternative of the innermost span at point."
   (interactive "p")
   (write-on-alt-next (- n)))
 
@@ -489,7 +528,7 @@ Then ] and [ keep cycling; a run of cycling undoes in one step."
 (defun write-on--json (s)
   "Parse the JSON array in model reply S."
   (let ((b (string-search "[" s))
-        (e (and (string-match ".*\\(\\]\\)" s) (match-end 1))))
+        (e (let ((i (cl-position ?\] s :from-end t))) (and i (1+ i)))))
     (unless (and b e) (error "No JSON array in reply"))
     (json-parse-string (substring s b e) :object-type 'alist :array-type 'list)))
 
@@ -524,6 +563,8 @@ A spinner runs meanwhile, also after overlay O if given."
   ;; Load all of gptel, not just the autoloaded gptel-request, so the
   ;; user's deferred gptel config (backend, model, key) has run.
   (require 'gptel nil t)
+  (unless (fboundp 'gptel-request)
+    (user-error "write-on: AI features need gptel"))
   (let* ((buf (current-buffer))
          (chunks nil)
          (stop (write-on--spin o))
@@ -539,22 +580,27 @@ A spinner runs meanwhile, also after overlay O if given."
       (message "write-on: asking...")
       ;; Stream: some endpoints reject non-streaming requests.  When the
       ;; backend can't stream, gptel ignores this and replies in one string.
-      (gptel-request prompt
-        :system write-on-ai-system
-        :stream t
-        :callback
-        (lambda (resp info)
-          (cond
-           ((and (stringp resp) (plist-get info :stream)) (push resp chunks))
-           ((stringp resp) (finish resp))
-           ((eq resp t) (finish (apply #'concat (nreverse chunks))))
-           ((memq resp '(nil abort))
-            (let ((err (plist-get info :error)))
-              (message "write-on: request failed: %s %s" (plist-get info :status)
-                     (or (and (listp err) (alist-get 'message err)) err "")))
-            (with-current-buffer buf (funcall on-fail)))))))))
+      ;; If the request can't even start, stop the spinner and clean up.
+      (condition-case err
+          (gptel-request prompt
+            :system write-on-ai-system
+            :stream t
+            :callback
+            (lambda (resp info)
+              (cond
+               ((and (stringp resp) (plist-get info :stream)) (push resp chunks))
+               ((stringp resp) (finish resp))
+               ((eq resp t) (finish (apply #'concat (nreverse chunks))))
+               ((memq resp '(nil abort))
+                (let ((err (plist-get info :error)))
+                  (message "write-on: request failed: %s %s" (plist-get info :status)
+                           (or (and (listp err) (alist-get 'message err)) err "")))
+                (with-current-buffer buf (funcall on-fail))))))
+        (error (funcall on-fail)
+               (signal (car err) (cdr err)))))))
 
 (defun write-on--paragraph-at (pos)
+  "Text of the paragraph at POS."
   (save-excursion
     (goto-char pos)
     (pcase-let ((`(,b . ,e) (write-on--span 'paragraph)))
@@ -562,7 +608,7 @@ A spinner runs meanwhile, also after overlay O if given."
 
 (defun write-on-alt-ai (arg)
   "Ask the model for alternatives to the span at point, then pick one.
-The span is chosen as in `write-on-alt'."
+The span is chosen from prefix ARG as in `write-on-alt'."
   (interactive "P")
   (deactivate-mark)
   (apply #'write-on--ai (write-on--alt-target arg)))
@@ -624,12 +670,15 @@ Reply with a JSON array of strings."
   "<mouse-1>" #'write-on-lab-keep)
 
 (defun write-on--lab-overlays (&optional beg end)
+  "Lab overlays between BEG and END."
   (write-on--overlays 'write-on-lab beg end))
 
 (defun write-on--cuts ()
+  "Lab overlays proposing a cut."
   (seq-filter (lambda (o) (overlay-get o 'write-on-cut)) (write-on--lab-overlays)))
 
 (defun write-on--lab-overlay (beg end &rest props)
+  "Make a Lab overlay over BEG..END with PROPS."
   (let ((o (make-overlay beg end nil t nil)))
     (overlay-put o 'write-on-lab t)
     (overlay-put o 'evaporate t)
@@ -670,7 +719,7 @@ Return `invalid' if TRIMMED is not ORIG with only words removed."
     (if want 'invalid (nreverse ranges))))
 
 (defun write-on--cut-bounds (b e)
-  "Widen cut B..E over one side's spaces so cutting leaves no gap."
+  "Widen cut B..E over one side's spaces, so no gap is left after cutting."
   (save-excursion
     (goto-char b)
     (if (memq (char-before) '(?\s ?\t))
@@ -680,6 +729,7 @@ Return `invalid' if TRIMMED is not ORIG with only words removed."
       (cons b (point)))))
 
 (defun write-on--lab-prompt (type arg text)
+  "Model prompt for Lab check TYPE (with its ARG) over TEXT."
   (pcase type
     ('mark (format "%s
 Reply with a JSON array of objects {\"text\": the exact passage copied verbatim from the text, \"note\": a short reason}.
@@ -776,7 +826,7 @@ Text:
   (write-on-lab-clear))
 
 (defun write-on-lab-clear ()
-  "Remove all Lab marks and cuts."
+  "Remove every Lab mark and cut."
   (interactive)
   (mapc #'delete-overlay (write-on--lab-overlays)))
 
@@ -827,10 +877,13 @@ Text:
 (defvar-local write-on--count-cache nil
   "(KEY . WORDS) for the last word count.")
 
+(defun write-on--count-key ()
+  "What the word count depends on: the text and where the ghosts are."
+  (cons (buffer-chars-modified-tick) (mapcar #'overlay-start (write-on--ghosts))))
+
 (defun write-on--word-count ()
   "Words in the buffer, not counting ghosted text.  Cached."
-  (let ((key (cons (buffer-chars-modified-tick)
-                   (mapcar #'overlay-start (write-on--ghosts)))))
+  (let ((key (write-on--count-key)))
     (unless (equal key (car write-on--count-cache))
       (setq write-on--count-cache
             (cons key (let ((text (write-on--clean-text)))
@@ -838,6 +891,27 @@ Text:
                           (insert text)
                           (count-words (point-min) (point-max)))))))
     (cdr write-on--count-cache)))
+
+(defvar-local write-on--count-timer nil
+  "Pending recount for the mode line, run after a pause in typing.")
+
+(defun write-on--lighter ()
+  "Mode line text, with the word count as of the last pause in typing.
+Recounting a book-length buffer on every keystroke is noticeable, so the
+count is redone once, after 1s idle."
+  (unless (or write-on--count-timer
+              (equal (write-on--count-key) (car write-on--count-cache)))
+    (let ((buf (current-buffer)))
+      (setq write-on--count-timer
+            (run-with-idle-timer
+             1 nil (lambda ()
+                     (when (buffer-live-p buf)
+                       (with-current-buffer buf
+                         (setq write-on--count-timer nil)
+                         (write-on--word-count)
+                         (force-mode-line-update))))))))
+  (concat " WO" (or write-on--busy "")
+          (and write-on--count-cache (format " %dw" (cdr write-on--count-cache)))))
 
 (defun write-on-count-words ()
   "Show the word count, not counting ghosted text."
@@ -849,13 +923,14 @@ Text:
 ;; A Write_On-style side panel listing the alternatives of every span at
 ;; point (word, sentence, paragraph), live as you move.
 
-(defcustom write-on-panel-width 36
+(defcustom write-on-panel-width 60
   "Width of the alternatives panel."
   :type 'integer)
 
 (defconst write-on--panel-name "*write-on*")
 
 (defun write-on--panel-window ()
+  "The window showing the alternatives panel, if any."
   (get-buffer-window write-on--panel-name))
 
 (defun write-on--panel-refresh ()
@@ -869,14 +944,16 @@ Text:
           (erase-buffer)
           (setq write-on--source src)
           (if (null spans)
-              (insert (propertize "No alternatives here.\n\nC-c w ; adds one.\nC-c w : asks the model.\n"
+              (insert (propertize (concat "No alternatives here.\n\n"
+                                          "C-c w ; adds one.\n"
+                                          "C-c w : asks the model.\n")
                                   'face 'shadow))
             (dolist (o spans)
               (let ((cur (with-current-buffer src (write-on--text o))))
                 (insert (propertize (capitalize (symbol-name (overlay-get o 'write-on-kind)))
                                     'face 'bold)
                         "\n")
-                (dolist (v (with-current-buffer src (write-on--variants o)))
+                (dolist (v (with-current-buffer src (write-on--shown-variants o)))
                   (insert (propertize (concat (if (equal v cur) "● " "○ ") v "\n")
                                       'write-on-o o 'write-on-v v
                                       'face (if (equal v cur) 'write-on-alt-dots 'default)))))
@@ -944,20 +1021,29 @@ Text:
 
 ;;; Overflow
 
+(defvar-local write-on--overflow nil
+  "The document's Overflow buffer.
+Held by reference: the document's name can change (renames, uniquify).")
+(put 'write-on--overflow 'permanent-local t)
+
 (defun write-on--overflow-buffer ()
-  (let* ((src (current-buffer))
-         (buf (get-buffer-create (format "*overflow: %s*" (buffer-name src)))))
-    (with-current-buffer buf
-      (unless (derived-mode-p 'write-on-overflow-mode)
-        (write-on-overflow-mode))
-      (setq write-on--source src))
-    buf))
+  "The document's Overflow buffer, created on first use."
+  (unless (buffer-live-p write-on--overflow)
+    (let ((src (current-buffer)))
+      (setq write-on--overflow
+            (generate-new-buffer (format "*overflow: %s*" (buffer-name))))
+      (with-current-buffer write-on--overflow
+        (write-on-overflow-mode)
+        (setq write-on--source src))))
+  write-on--overflow)
 
 (defun write-on--kill-overflow ()
-  (when-let ((buf (get-buffer (format "*overflow: %s*" (buffer-name)))))
-    (kill-buffer buf)))
+  "Kill the document's Overflow buffer (`kill-buffer-hook')."
+  (when (buffer-live-p write-on--overflow)
+    (kill-buffer write-on--overflow)))
 
 (defun write-on--overflow-text ()
+  "The text in the document's Overflow."
   (with-current-buffer (write-on--overflow-buffer)
     (buffer-substring-no-properties (point-min) (point-max))))
 
@@ -989,7 +1075,7 @@ Text:
   (unless (buffer-live-p write-on--source)
     (user-error "Document buffer is gone"))
   (pcase-let* ((`(,beg . ,end) (or (bounds-of-thing-at-point 'paragraph)
-                                    (user-error "Nothing here")))
+                                   (user-error "Nothing here")))
                (text (string-trim (buffer-substring-no-properties beg end))))
     (delete-region beg end)
     (with-current-buffer write-on--source
@@ -998,7 +1084,7 @@ Text:
       (select-window w))))
 
 (defun write-on--overflow-changed (&rest _)
-  ;; Overflow is saved with the document, so mark the document dirty.
+  "Mark the document modified: Overflow is saved along with it."
   (when (buffer-live-p write-on--source)
     (with-current-buffer write-on--source (set-buffer-modified-p t))))
 
@@ -1013,6 +1099,7 @@ Text:
 ;;; Saved state
 
 (defun write-on--save ()
+  "Save alternatives, ghosts, and Overflow (`after-save-hook')."
   (let ((ghosts (mapcar (lambda (o)
                           (list (overlay-start o) (overlay-end o) (write-on--text o)))
                         (write-on--ghosts)))
@@ -1047,6 +1134,7 @@ Text:
         (cons (match-beginning 0) (point))))))
 
 (defun write-on--restore ()
+  "Load the document's saved alternatives, ghosts, and Overflow."
   (let ((file (write-on--state-file)))
     (when (file-exists-p file)
       (condition-case err
@@ -1091,19 +1179,20 @@ One prefix keeps clear of Org's and Markdown's own \`C-c' keys."
 (defvar-keymap write-on-mode-map
   "C-c w" write-on-prefix-map)
 
-
 ;;;###autoload
 (define-minor-mode write-on-mode
   "Alternative control for prose.
 
 \\{write-on-mode-map}"
-  :lighter (:eval (format " WO%s %dw" (or write-on--busy "") (write-on--word-count)))
+  :lighter (:eval (write-on--lighter))
   (if write-on-mode
       (progn
-        (setq write-on--state-broken nil)
         ;; Modern prose uses one space after a period.
         (setq-local sentence-end-double-space nil)
-        (when buffer-file-name (write-on--restore))
+        (unless write-on--loaded
+          (setq write-on--state-broken nil)
+          (when buffer-file-name (write-on--restore))
+          (setq write-on--loaded t))
         (add-hook 'after-save-hook #'write-on--save nil t)
         (add-hook 'post-command-hook #'write-on--highlight nil t)
         (write-on--theme-faces)
@@ -1112,6 +1201,10 @@ One prefix keeps clear of Org's and Markdown's own \`C-c' keys."
     (remove-hook 'after-save-hook #'write-on--save t)
     (remove-hook 'post-command-hook #'write-on--highlight t)
     (remove-hook 'kill-buffer-hook #'write-on--kill-overflow t)
+    (setq write-on--loaded nil)
+    (when write-on--count-timer
+      (cancel-timer write-on--count-timer)
+      (setq write-on--count-timer nil))
     (mapc #'delete-overlay (append (write-on--ghosts) (write-on--alts)
                                    (write-on--lab-overlays)))))
 

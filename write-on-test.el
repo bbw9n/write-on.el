@@ -4,6 +4,7 @@
 
 (require 'ert)
 (require 'write-on)
+(require 'uniquify)
 
 (defmacro write-on-test--with-doc (text &rest body)
   (declare (indent 1))
@@ -98,7 +99,6 @@
         (save-buffer))
       (should (file-exists-p state))
       (should-not (directory-files dir nil "\\.wo\\'")))))
-
 
 (defmacro write-on-test--picking (choice &rest body)
   "Run BODY with `completing-read' returning CHOICE (or quitting if :quit)."
@@ -399,3 +399,86 @@
             (with-current-buffer write-on--panel-name
               (should (string-match-p "● tension" (buffer-string)))))
         (write-on-panel-toggle)))))
+
+(ert-deftest write-on-overflow-survives-buffer-rename ()
+  "Opening a second essay.md renames the first buffer; its Overflow must survive."
+  (let* ((root (make-temp-file "wo" t))
+         (write-on-directory (expand-file-name "state/" root))
+         (uniquify-buffer-name-style 'forward)
+         (f1 (expand-file-name "a/essay.md" root)) (f2 (expand-file-name "b/essay.md" root)))
+    (make-directory (file-name-directory f1) t) (make-directory (file-name-directory f2) t)
+    (with-temp-file f1 (insert "One. Two.")) (with-temp-file f2 (insert "Other."))
+    (with-current-buffer (find-file-noselect f1)
+      (write-on-mode 1)
+      (goto-char (point-min)) (write-on-stash)          ; stash "One."
+      (find-file-noselect f2)                            ; uniquify renames this buffer
+      (save-buffer)
+      (should (string-match-p "One\\." (write-on--overflow-text))))))
+
+(ert-deftest write-on-reenable-loads-once ()
+  (write-on-test--with-doc "Much of the tension in design."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (write-on-test--add "tens" "pressure")
+      (save-buffer)
+      (write-on-mode 1)                                  ; e.g. mode hook runs again
+      (should (= 1 (length (write-on--alts)))))))
+
+(ert-deftest write-on-revert-keeps-alternatives ()
+  (write-on-test--with-doc "Much of the tension in design."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (write-on-test--add "tens" "pressure")
+      (save-buffer)
+      (revert-buffer t t t)                              ; what auto-revert does
+      (should (equal (write-on-test--alts) '(("pressure" word ("tension" "pressure"))))))))
+
+(ert-deftest write-on-panel-doesnt-record-typing ()
+  (write-on-test--with-doc "Much of the tension in design."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (switch-to-buffer (current-buffer))
+      (write-on-test--add "tens" "pressure")
+      (write-on-panel-toggle)
+      (unwind-protect
+          (progn
+            (goto-char (point-min)) (search-forward "press")
+            (insert "X") (write-on--highlight)           ; mid-typing, panel open
+            (should (equal (overlay-get (car (write-on--alts)) 'write-on-alts)
+                           '("tension" "pressure"))))
+        (write-on-panel-toggle)))))
+
+(ert-deftest write-on-request-error-cleans-up ()
+  (write-on-test--with-doc "Alpha beta."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (goto-char (point-min))
+      (let ((timers (length timer-list)))
+        (cl-letf (((symbol-function 'gptel-request) (lambda (&rest _) (error "No backend"))))
+          (ignore-errors (write-on-alt-ai nil)))
+        (should (= timers (length timer-list)))
+        (should-not (write-on--alts))))))
+
+(ert-deftest write-on-json-multiline ()
+  (should (equal (write-on--json "[\n  \"a [sic]\",\n  \"b\"\n]") '("a [sic]" "b"))))
+
+(ert-deftest write-on-lighter-counts-after-pause ()
+  "The mode line keeps the old count while typing; one recount after a pause."
+  (write-on-test--with-doc "One two three."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (cl-flet ((pause () (let ((tm write-on--count-timer))
+                            (should tm)
+                            (apply (timer--function tm) (timer--args tm)))))
+        (should (equal (write-on--lighter) " WO"))      ; nothing counted yet
+        (pause)
+        (should (equal (write-on--lighter) " WO 3w"))
+        (goto-char (point-max)) (insert " Four five.")
+        (should (equal (write-on--lighter) " WO 3w"))   ; stale while typing
+        (let ((tm write-on--count-timer))
+          (insert " Six.")
+          (write-on--lighter)
+          (should (eq tm write-on--count-timer)))       ; one pending recount, not one per key
+        (pause)
+        (should (equal (write-on--lighter) " WO 6w"))
+        (should-not write-on--count-timer)))))
