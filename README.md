@@ -1,5 +1,7 @@
 # write-on.el
 
+[![test](https://github.com/bbw9n/write-on.el/actions/workflows/test.yml/badge.svg)](https://github.com/bbw9n/write-on.el/actions/workflows/test.yml)
+
 "Alternative control" for prose in Emacs, inspired by [Jason Fried's Write_On](https://x.com/jasonfried/status/2105403067793584590). Keep variants of a word, sentence, or paragraph; dim text instead of deleting it; stash cuts nearby; let a model suggest alternatives, flag weak spots, and trim.
 
 ## Setup
