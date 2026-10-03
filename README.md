@@ -6,9 +6,9 @@
 
 ## Demo
 
-[![write-on in Doom Emacs: moving through the list of alternatives previews each one on the page](write-on.png)](write-on.mp4)
+https://github.com/user-attachments/assets/16168d41-628f-4101-a943-8356eeb6011d
 
-▶ **[Watch the 2-minute demo](write-on.mp4)**: word, sentence and paragraph alternatives (from the model or typed in), cycling through them, the side panel, dimming text, stashing to Overflow and popping it back, and a Lab trim. The model's suggestions in the demo are pre-recorded.
+Word, sentence and paragraph alternatives (from the model or typed in), cycling through them, the side panel, dimming text, stashing to Overflow and popping it back, and a Lab trim. The model's suggestions in the demo are pre-recorded.
 
 ## Setup
 
