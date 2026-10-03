@@ -4,13 +4,19 @@
 
 "Alternative control" for prose in Emacs, inspired by [Jason Fried's Write_On](https://x.com/jasonfried/status/2105403067793584590). Keep variants of a word, sentence, or paragraph; dim text instead of deleting it; stash cuts nearby; let a model suggest alternatives, flag weak spots, and trim.
 
+## Demo
+
+[![write-on in Doom Emacs: moving through the list of alternatives previews each one on the page](write-on.png)](write-on.mp4)
+
+▶ **[Watch the 2-minute demo](write-on.mp4)**: word, sentence and paragraph alternatives (from the model or typed in), cycling through them, the side panel, dimming text, stashing to Overflow and popping it back, and a Lab trim. The model's suggestions in the demo are pre-recorded.
+
 ## Setup
 
-Requires Emacs 29+. AI features need [gptel](https://github.com/karthink/gptel) with a backend configured. Live preview while picking works best with Vertico.
+Requires Emacs 29+. AI features need [gptel](https://github.com/karthink/gptel) with a backend configured. Live preview while picking works with Vertico, Helm, and Icomplete/Fido.
 
 ```elisp
 ;; config.el
-(add-to-list 'load-path "~/work/genai/write-on")
+(add-to-list 'load-path "/path/to/write-on.el")   ; where you cloned this repo
 (require 'write-on)
 (add-hook 'markdown-mode-hook #'write-on-mode)
 (add-hook 'org-mode-hook #'write-on-mode)

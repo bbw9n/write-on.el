@@ -410,8 +410,11 @@ point, or the word at point; with prefix ARG the sentence
   (when write-on-dim-others
     (pcase-let ((`(,b . ,e) (save-excursion (goto-char (overlay-start o))
                                             (write-on--span 'paragraph))))
+      ;; Front-advance t, rear-advance nil: text inserted at either edge
+      ;; stays outside, so a previewed variant (swapped in right where the
+      ;; dimmed text after it begins) isn't dimmed with it.
       (mapcar (lambda (r)
-                (let ((d (make-overlay (car r) (cdr r))))
+                (let ((d (make-overlay (car r) (cdr r) nil t nil)))
                   (overlay-put d 'face 'write-on-dim)
                   d))
               (list (cons (point-min) (min b (overlay-start o)))
@@ -423,12 +426,22 @@ point, or the word at point; with prefix ARG the sentence
     (pulse-momentary-highlight-region (overlay-start o) (overlay-end o) 'region)))
 
 (declare-function vertico--candidate "ext:vertico")
+(declare-function helm-get-selection "ext:helm-core")
+(defvar helm-alive-p)
+(defvar vertico--input)
 
 (defun write-on--candidate ()
-  "The completion candidate the user is on (Vertico), else the input."
-  (if (and (bound-and-true-p vertico-mode) (fboundp 'vertico--candidate))
-      (vertico--candidate)
-    (minibuffer-contents-no-properties)))
+  "The completion candidate the user is on, else the input.
+Knows Vertico, Helm, and Icomplete/Fido."
+  ;; Ask the UI that is actually running this minibuffer: configs may enable
+  ;; several (Doom can have Vertico on while Helm handles `completing-read').
+  (cond ((and (bound-and-true-p helm-alive-p) (fboundp 'helm-get-selection))
+         (helm-get-selection))
+        ((and (bound-and-true-p vertico--input) (fboundp 'vertico--candidate))
+         (vertico--candidate))
+        ((bound-and-true-p icomplete-mode)
+         (car (completion-all-sorted-completions)))
+        (t (minibuffer-contents-no-properties))))
 
 (defun write-on--pick (o fresh)
   "Let the user choose O's variant, previewing each in place.
@@ -439,28 +452,30 @@ pick is one undo step."
          (vs (write-on--variants o))
          (group (prepare-change-group))
          (dims (write-on--dim o))
+         ;; Preview whatever the completion UI has highlighted.  Polled, not
+         ;; hooked: Vertico, Helm, Fido... each signal moves differently.
+         (preview (run-with-timer
+                   0.1 0.1
+                   (lambda ()
+                     (when-let* ((mini (active-minibuffer-window))
+                                 (c (with-current-buffer (window-buffer mini)
+                                      (write-on--candidate))))
+                       (when (and (member c vs) (overlay-buffer o))
+                         (with-current-buffer src (write-on--swap o c)))))))
          (done nil))
     (activate-change-group group)
     (unwind-protect
-        (let ((pick (minibuffer-with-setup-hook
-                        (lambda ()
-                          (add-hook 'post-command-hook
-                                    (lambda ()
-                                      (let ((c (write-on--candidate)))
-                                        (when (and (member c vs) (overlay-buffer o))
-                                          (with-current-buffer src
-                                            (write-on--swap o c)))))
-                                    nil t))
-                      (completing-read
-                       (format "Alternative %s (%d): "
-                               (overlay-get o 'write-on-kind) (length vs))
-                       vs nil nil nil nil orig))))
+        (let ((pick (completing-read
+                     (format "Alternative %s (%d): "
+                             (overlay-get o 'write-on-kind) (length vs))
+                     vs nil nil nil nil orig)))
           (unless (member pick vs)
             (overlay-put o 'write-on-alts (append vs (list pick))))
           (write-on--swap o pick)
           (write-on--flash o)
           (set-buffer-modified-p t)
           (setq done t))
+      (cancel-timer preview)
       (when (and (not done) (overlay-buffer o))
         (write-on--swap o orig))
       (mapc #'delete-overlay dims)
@@ -538,19 +553,23 @@ Then ] and [ keep cycling; a run of cycling undoes in one step."
 (defconst write-on--frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 
 (defun write-on--spin (&optional o)
-  "Animate a spinner in the mode line (and after overlay O).
+  "Animate a spinner in the mode line, and at overlay O if given.
+For a word or sentence the spinner follows the span; for a paragraph it
+leads it, next to the cursor rather than at the far end of the paragraph.
 Return a function that stops it."
   (let* ((buf (current-buffer))
          (i 0)
+         (lead (and o (eq (overlay-get o 'write-on-kind) 'paragraph)))
          (show (lambda (frame)
                  (when (buffer-live-p buf)
                    (with-current-buffer buf
                      (setq write-on--busy frame)
                      (when (and o (overlay-buffer o))
                        (overlay-put o 'write-on-busy frame)
-                       (overlay-put o 'after-string
-                                    (and frame (propertize (concat " " frame)
-                                                           'face 'write-on-alt-dots))))
+                       (overlay-put o (if lead 'before-string 'after-string)
+                                    (and frame
+                                         (propertize (if lead (concat frame " ") (concat " " frame))
+                                                     'face 'write-on-alt-dots))))
                      (force-mode-line-update)))))
          (timer (run-at-time 0 0.1 (lambda ()
                                      (setq i (mod (1+ i) (length write-on--frames)))
@@ -719,14 +738,20 @@ Return `invalid' if TRIMMED is not ORIG with only words removed."
     (if want 'invalid (nreverse ranges))))
 
 (defun write-on--cut-bounds (b e)
-  "Widen cut B..E over one side's spaces, so no gap is left after cutting."
+  "Widen cut B..E over one side's spaces, so no gap is left after cutting.
+A cut after a space takes that space; a cut at the start of a line takes
+the space after it; a cut attached to the previous word (\", in the
+end,\") takes neither, so the words around it stay apart."
   (save-excursion
     (goto-char b)
-    (if (memq (char-before) '(?\s ?\t))
-        (progn (skip-chars-backward " \t") (cons (point) e))
-      (goto-char e)
-      (skip-chars-forward " \t")
-      (cons b (point)))))
+    (cond ((memq (char-before) '(?\s ?\t))
+           (skip-chars-backward " \t")
+           (cons (point) e))
+          ((or (bobp) (bolp))
+           (goto-char e)
+           (skip-chars-forward " \t")
+           (cons b (point)))
+          (t (cons b e)))))
 
 (defun write-on--lab-prompt (type arg text)
   "Model prompt for Lab check TYPE (with its ARG) over TEXT."
@@ -1004,9 +1029,20 @@ count is redone once, after 1s idle."
   "n" #'next-line
   "p" #'previous-line)
 
+(defun write-on--pad-pane ()
+  "Give a side pane's text room: a blank line above, margins at the sides.
+Display only (an overlay and window margins), so the text, which for
+Overflow is saved, doesn't change."
+  (setq-local left-margin-width 2
+              right-margin-width 2)
+  (let ((pad (make-overlay (point-min) (point-min) nil nil t)))
+    (overlay-put pad 'before-string "\n")
+    (overlay-put pad 'write-on-pad t)))
+
 (define-derived-mode write-on-panel-mode special-mode "Alternatives"
   "Side panel listing the alternatives at point in a write-on document."
-  (visual-line-mode 1))
+  (visual-line-mode 1)
+  (write-on--pad-pane))
 
 (defun write-on-panel-toggle ()
   "Show or hide the alternatives panel."
@@ -1094,6 +1130,7 @@ Held by reference: the document's name can change (renames, uniquify).")
 (define-derived-mode write-on-overflow-mode text-mode "Overflow"
   "Stash pane for a write-on document.  \\[write-on-overflow-use] puts text back."
   (visual-line-mode 1)
+  (write-on--pad-pane)
   (add-hook 'after-change-functions #'write-on--overflow-changed nil t))
 
 ;;; Saved state

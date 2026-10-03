@@ -482,3 +482,69 @@
         (pause)
         (should (equal (write-on--lighter) " WO 6w"))
         (should-not write-on--count-timer)))))
+
+(ert-deftest write-on-cut-bounds-keep-words-apart ()
+  "Cutting never leaves a double space or glues two words together."
+  (cl-flet ((cut (text from to)
+              (with-temp-buffer
+                (insert text)
+                (pcase-let ((`(,b . ,e) (write-on--cut-bounds (1+ from) (1+ to))))
+                  (delete-region b e))
+                (buffer-string))))
+    (should (equal (cut "a very big dog" 2 10) "a dog"))
+    (should (equal (cut "the best edits, in the end, are" 14 27) "the best edits are"))
+    (should (equal (cut "It all depends. When you" 0 15) "When you"))
+    (should (equal (cut "comprehension, etc." 13 18) "comprehension."))))
+
+(ert-deftest write-on-dim-spares-previewed-paragraph ()
+  "A paragraph variant previewed while picking isn't swallowed by the dimming."
+  (write-on-test--with-doc "First para here.\n\nSecond para here.\n\nThird para."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (goto-char (point-min)) (search-forward "Second")
+      (let* ((o (car (write-on--alt-target '(16))))
+             (dims (write-on--dim o)))
+        (write-on--swap o "A much longer replacement for the second paragraph.")
+        (dolist (d dims)
+          (should-not (and (< (overlay-start d) (overlay-end o))
+                           (< (overlay-start o) (overlay-end d)))))
+        (should (equal (mapcar (lambda (d) (buffer-substring (overlay-start d) (overlay-end d)))
+                               dims)
+                       '("First para here.\n\n" "\n\nThird para.")))
+        (mapc #'delete-overlay dims)))))
+
+(ert-deftest write-on-panes-are-padded ()
+  "Side panes get a blank line above their text, without changing the text."
+  (write-on-test--with-doc "One. Two."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (goto-char (point-min)) (write-on-stash)
+      (with-current-buffer (write-on--overflow-buffer)
+        (should (= left-margin-width 2))
+        (should (seq-find (lambda (o) (equal (overlay-get o 'before-string) "\n"))
+                          (overlays-in (point-min) (point-max)))))
+      ;; The padding stays at the top as more is stashed, and isn't saved.
+      (goto-char (point-min)) (search-forward "Two") (write-on-stash)
+      (with-current-buffer (write-on--overflow-buffer)
+        (should (= 1 (overlay-start (seq-find (lambda (o) (overlay-get o 'write-on-pad))
+                                              (overlays-in (point-min) (point-max)))))))
+      (should (string= (write-on--overflow-text) "Two.\n\nOne.\n\n")))))
+
+(ert-deftest write-on-paragraph-spinner-leads ()
+  "A paragraph's spinner shows at its start, not after its last word."
+  (write-on-test--with-doc "Alpha beta.\n\nGamma delta."
+    (with-current-buffer (find-file-noselect file)
+      (write-on-mode 1)
+      (goto-char (point-min))
+      (let ((para (car (write-on--alt-target '(16))))
+            (tick nil))
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (_ _ f &rest _) (setq tick f) 'fake-timer))
+                  ((symbol-function 'cancel-timer) #'ignore))
+          (let ((stop (write-on--spin para)))
+            (funcall tick)              ; one spinner frame
+            (should (string-match-p "\\` *[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \\'"
+                                    (overlay-get para 'before-string)))
+            (should-not (overlay-get para 'after-string))
+            (funcall stop)
+            (should-not (overlay-get para 'before-string))))))))
