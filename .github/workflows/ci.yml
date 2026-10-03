@@ -1,4 +1,4 @@
-name: test
+name: ci
 
 on:
   push:
@@ -45,3 +45,26 @@ jobs:
           out=$(emacs --batch --eval '(checkdoc-file "write-on.el")' 2>&1)
           echo "$out"
           ! grep -q "write-on.el:[0-9]" <<< "$out"
+
+  melpazoid:
+    # MELPA's review checks (https://github.com/riscy/melpazoid), per its
+    # recommended workflow: builds the package from RECIPE in Docker.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: |
+          sudo apt-get install emacs && emacs --version
+          git clone https://github.com/riscy/melpazoid.git ~/melpazoid
+      - name: Run
+        env:
+          LOCAL_REPO: ${{ github.workspace }}
+          RECIPE: (write-on :fetcher github :repo "bbw9n/write-on.el")
+          # Fail on warnings too: write-on passes cleanly, keep it that way.
+          WARN_IS_ERROR: true
+          # Not on MELPA yet; set to true once it is.
+          EXIST_OK: false
+        run: echo $GITHUB_REF && make -C ~/melpazoid
