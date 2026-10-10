@@ -3,10 +3,10 @@
 ;; Copyright (C) 2026 bbw9n
 
 ;; Author: bbw9n <bbw9nio@gmail.com>
+;; Assisted-by: Claude:claude-opus-5
 ;; URL: https://github.com/bbw9n/write-on.el
 ;; Version: 0.1
 ;; Package-Requires: ((emacs "29.1"))
-;; Keywords: wp
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is not part of GNU Emacs.
@@ -36,7 +36,6 @@
 ;;
 ;; Each document's state is saved in `write-on-directory' (under your
 ;; Emacs config, like other packages' data), so the document stays clean.
-;; See PLAN.md.
 
 ;;; Code:
 
